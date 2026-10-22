@@ -1,0 +1,7 @@
+# gitleaks configuration: default rules plus project allowlist.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Example env file contains only placeholders"
+paths = ['''\.env\.example''']

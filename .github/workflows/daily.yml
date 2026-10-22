@@ -1,0 +1,133 @@
+name: Daily newsletter
+
+on:
+  schedule:
+    # 02:17 UTC (10:17 Beijing/Singapore). Off the top of the hour to avoid scheduler delays.
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: daily-newsletter
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # commit the day's issue to archive/
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.config.outputs.configured }}
+    steps:
+      - name: Check configuration
+        # A new fork or template copy has no keys yet: finish quietly instead of failing every day.
+        id: config
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.OPENAI_API_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" = "true" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No LLM key configured. Add the ANTHROPIC_API_KEY or OPENAI_API_KEY secret to start generating issues."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.config.outputs.configured == 'true'
+      - uses: astral-sh/setup-uv@v6
+        if: steps.config.outputs.configured == 'true'
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra openai
+        if: steps.config.outputs.configured == 'true'
+
+      - name: Generate and publish
+        if: steps.config.outputs.configured == 'true'
+        env:
+          # LLM: set ANTHROPIC_API_KEY, or LLMDAILY_PROVIDER=openai with OPENAI_* (see README)
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          LLMDAILY_PROVIDER: ${{ vars.LLMDAILY_PROVIDER }}
+          LLMDAILY_MODEL: ${{ vars.LLMDAILY_MODEL }}
+          LLMDAILY_EFFORT: ${{ vars.LLMDAILY_EFFORT }}
+          LLMDAILY_LANG: ${{ vars.LLMDAILY_LANG || 'en' }}
+          # Sources
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          REDDIT_USER_AGENT: "llm-daily/1.0 (GitHub Actions)"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PRODUCTHUNT_API_TOKEN: ${{ secrets.PRODUCTHUNT_API_TOKEN }}
+          # Publishing: comma-separated list of archive, buttondown, kit, telegram, webhook
+          LLMDAILY_PUBLISHERS: ${{ vars.LLMDAILY_PUBLISHERS || 'archive' }}
+          LLMDAILY_SITE_URL: ${{ vars.LLMDAILY_SITE_URL }}
+          BUTTONDOWN_API_KEY: ${{ secrets.BUTTONDOWN_API_KEY }}
+          NEWSLETTER_STATUS: ${{ vars.NEWSLETTER_STATUS || 'draft' }}
+          KIT_API_KEY: ${{ secrets.KIT_API_KEY }}
+          KIT_STATUS: ${{ vars.KIT_STATUS || 'draft' }}
+          KIT_SEGMENT_ID: ${{ vars.KIT_SEGMENT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+          LLMDAILY_WEBHOOK_URL: ${{ secrets.LLMDAILY_WEBHOOK_URL }}
+        run: |
+          # Default web address: https://<owner>.github.io/<repo>/
+          export LLMDAILY_SITE_URL="${LLMDAILY_SITE_URL:-https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/}"
+          uv run llm-daily --skip-x
+
+      - name: Commit the issue to archive/
+        # Runs even if a publisher failed, so the archive stays complete. Daily commits
+        # also keep GitHub from disabling this schedule after 60 days of inactivity.
+        if: always() && steps.config.outputs.configured == 'true'
+        run: |
+          if [ -d archive ] && [ -n "$(git status --porcelain archive)" ]; then
+            git config user.name "llm-daily bot"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add archive
+            git commit -m "Add issue $(date -u +%Y-%m-%d)"
+            git push
+          else
+            echo "No new issue to commit"
+          fi
+
+      - name: Upload newsletter
+        if: always() && steps.config.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: newsletter-${{ github.run_number }}
+          path: data/output/llm_newsletter_*.md
+          if-no-files-found: ignore
+          retention-days: 14
+
+  pages:
+    # Enable with the repository variable LLMDAILY_PAGES=true and
+    # Settings > Pages > Source: GitHub Actions.
+    needs: generate
+    if: ${{ always() && vars.LLMDAILY_PAGES == 'true' && needs.generate.outputs.configured == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}   # include the archive commit made by the generate job
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - name: Build site
+        env:
+          LLMDAILY_SITE_URL: ${{ vars.LLMDAILY_SITE_URL }}
+        run: |
+          export LLMDAILY_SITE_URL="${LLMDAILY_SITE_URL:-https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/}"
+          uv run llm-daily-site --out site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4

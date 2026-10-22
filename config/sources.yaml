@@ -1,0 +1,19 @@
+# LLM Daily data sources.
+# Override the path with the LLMDAILY_SOURCES environment variable.
+
+reddit:
+  # Posts from the last 48 hours are collected from each active subreddit.
+  subreddits:
+    - {name: LocalLLaMA, active: true}
+    - {name: MachineLearning, active: true}
+    - {name: StableDiffusion, active: true}
+    - {name: OpenAI, active: true}
+    - {name: ClaudeAI, active: true}
+    - {name: ChatGPT, active: true}
+    - {name: Oobabooga, active: true}
+
+x:
+  # ID of a public X list to read posts from (the number in
+  # https://x.com/i/lists/<id>). Required only if you enable the X collector.
+  # The X_LIST_ID environment variable takes precedence.
+  list_id: ""
